@@ -4,6 +4,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include "checksum.h"
+#include <arpa/inet.h>
+#include <netinet/ether.h>
+
 
 
 FILE *fptr; 
@@ -17,14 +20,6 @@ pcap_t* open_pcap_file(const char* filename) {
         exit(EXIT_FAILURE); 
     }
     return file;
-}
-
-void parse_IPV6(const void* addr, u_int16_t len){
-    fprintf(fptr, "    IP Header\n");
-    //struct ipv6_header* ipv6 = (struct ipv6_header*)malloc(sizeof(struct ipv6_header));
-    //memcpy(ipv6, addr, sizeof(struct ipv6_header));
-
-    //...
 }
 
 void print_flags(uint8_t flags) {
@@ -101,7 +96,7 @@ void parse_TCP(const void* addr, u_int16_t len, struct tcp_pseudo_header* pseudo
     fprintf(fptr, "\tTCP Header\n");
     struct tcp_header* tcp = (struct tcp_header*)malloc(sizeof(struct tcp_header));
     memcpy(tcp, addr, sizeof(struct tcp_header));
-    char* raw_data = (char*)malloc(len + sizeof(struct tcp_pseudo_header));
+    char* raw_data = (char*)malloc(len + 12);
     memcpy(raw_data, pseudo_header, sizeof(struct tcp_pseudo_header));
     memcpy(raw_data + sizeof(struct tcp_pseudo_header), addr, len);
     fprintf(fptr, "\t\tSegment Length: %d\n", len);
@@ -190,9 +185,9 @@ void parse_UDP( const void* addr, u_int16_t len, struct udp_pseudo_header* pseud
     memcpy(raw_data, pseudo_header, sizeof(struct udp_pseudo_header));
     memcpy(raw_data + sizeof(struct udp_pseudo_header), addr, len);
     if(in_cksum((unsigned short*)raw_data, len + 12) != 0) {
-        fprintf(fptr, "\t\tChecksum Incorrect:packet dropped\n");
-        free(udp_header);
-        return;
+        // fprintf(fptr, "\t\tChecksum Incorrect:packet dropped\n");
+        // free(udp_header);
+        // return;
     }
     print_udp_source_port(udp_header);
     print_udp_dest_port(udp_header);
@@ -230,8 +225,10 @@ void print_back_half(struct ipv4_header* ipv4) {
     } else {
         fprintf(fptr, "\t\tChecksum: Incorrect (0x%04x)\n", ntohs(ipv4->header_checksum));
     }
-    fprintf(fptr, "\t\tSender IP: %u.%u.%u.%u\n", (ipv4->src_ip[0]), (ipv4->src_ip[1]), (ipv4->src_ip[2]), ipv4->src_ip[3]);
-    fprintf(fptr, "\t\tDest IP: %u.%u.%u.%u\n\n", (ipv4->dest_ip[0]), (ipv4->dest_ip[1]), (ipv4->dest_ip[2]), ipv4->dest_ip[3]);
+    char *ip_str = inet_ntoa(*(struct in_addr*)ipv4->src_ip); 
+    fprintf(fptr, "\t\tSender IP: %s\n", ip_str);
+    char *dest_str = inet_ntoa(*(struct in_addr*)ipv4->dest_ip);
+    fprintf(fptr, "\t\tDest IP: %s\n\n", dest_str);
     return; 
 }
 
@@ -245,6 +242,8 @@ struct tcp_pseudo_header* create_tcp_pseudo_header(struct ipv4_header* ipv4, uin
     return pseudo_header;
 }
 
+
+//changed here
 void parse_IPV4(const void* addr){
     fprintf(fptr, "\tIP Header\n");
     struct ipv4_header* ipv4 = (struct ipv4_header*)malloc(sizeof(struct ipv4_header));
@@ -252,7 +251,6 @@ void parse_IPV4(const void* addr){
     struct ipv4_header* full_ipv4 = (struct ipv4_header*)malloc((ipv4->version_headerLength & 0x0F) * 4);
     memcpy(full_ipv4, addr, (ipv4->version_headerLength & 0x0F) * 4);
     free(ipv4); 
-    //print relevant fields from ipv4 header 
     uint16_t offset = (full_ipv4->version_headerLength & 0x0F) * 4;
     uint16_t len = ntohs(full_ipv4->packet_length) - offset;
     fprintf(fptr, "\t\tIP PDU Len: %d\n", ntohs(full_ipv4->packet_length));
@@ -267,14 +265,14 @@ void parse_IPV4(const void* addr){
         case 6:
             fprintf(fptr, "\t\tProtocol: TCP\n");
             print_back_half(full_ipv4);
-            struct tcp_pseudo_header* pseudo_header = create_tcp_pseudo_header(full_ipv4, len - offset);
+            struct tcp_pseudo_header* pseudo_header = create_tcp_pseudo_header(full_ipv4, len);
             parse_TCP((char*)addr + offset, len,  pseudo_header);
             free(pseudo_header);
             break;
         case 17:
             fprintf(fptr, "\t\tProtocol: UDP\n");
             print_back_half(full_ipv4);
-            struct udp_pseudo_header* udp_pseudo_header= create_udp_pseudo_header(full_ipv4, len - offset);
+            struct udp_pseudo_header* udp_pseudo_header= create_udp_pseudo_header(full_ipv4, len);
             parse_UDP((char*)addr + offset, len, udp_pseudo_header);
             free(udp_pseudo_header);
             break;
@@ -299,10 +297,17 @@ void parse_ARP(const void* addr){
     } else {
         fprintf(fptr, "        Opcode: Unknown (0x%04x)\n", ntohs(arp_head->opcode));
     }
-    fprintf(fptr, "\t\tSender MAC: %x:%x:%x:%x:%x:%x\n", arp_head->sender_mac[0], arp_head->sender_mac[1], arp_head->sender_mac[2], arp_head->sender_mac[3], arp_head->sender_mac[4], arp_head->sender_mac[5]);
-    fprintf(fptr, "\t\tSender IP: %u.%u.%u.%u\n", (arp_head->sender_ip[0]), (arp_head->sender_ip[1]), (arp_head->sender_ip[2]), arp_head ->sender_ip[3]);
-    fprintf(fptr, "\t\tTarget MAC: %x:%x:%x:%x:%x:%x\n", arp_head->target_mac[0], arp_head->target_mac[1], arp_head->target_mac[2], arp_head->target_mac[3], arp_head->target_mac[4], arp_head->target_mac[5]);
-    fprintf(fptr, "\t\tTarget IP: %u.%u.%u.%u\n\n", (arp_head->target_ip[0]), (arp_head->target_ip[1]), (arp_head->target_ip[2]), arp_head ->target_ip[3]);
+
+    
+    char* mac_src_str = ether_ntoa((struct ether_addr*)arp_head->sender_mac);
+    fprintf(fptr, "\t\tSender MAC: %s\n", mac_src_str);
+    char *ip_str = inet_ntoa(*(struct in_addr*)arp_head->sender_ip); 
+    fprintf(fptr, "\t\tSender IP: %s\n", ip_str);
+
+    char* mac_dest_str = ether_ntoa((struct ether_addr*)arp_head->target_mac);
+    fprintf(fptr, "\t\tTarget MAC: %s\n", mac_dest_str);
+    char *dest_str = inet_ntoa(*(struct in_addr*)arp_head->target_ip);
+    fprintf(fptr, "\t\tTarget IP: %s\n\n", dest_str);
     free(arp_head);
     return; 
 }
@@ -312,8 +317,11 @@ struct ethernet_header* get_ethernet_header(const unsigned char* data) {
     struct ethernet_header* eth_header = (struct ethernet_header*)malloc(sizeof(struct ethernet_header));
     memcpy(eth_header, data, sizeof(struct ethernet_header));
     fprintf(fptr, "\tEthernet Header\n");
-    fprintf(fptr, "\t\tDest MAC: %x:%x:%x:%x:%x:%x\n", eth_header->dest[0], eth_header->dest[1], eth_header->dest[2], eth_header->dest[3], eth_header->dest[4], eth_header->dest[5]);
-    fprintf(fptr, "\t\tSource MAC: %x:%x:%x:%x:%x:%x\n", eth_header->src[0], eth_header->src[1], eth_header->src[2], eth_header->src[3], eth_header->src[4], eth_header->src[5]);
+    char* mac_dest_str = ether_ntoa((struct ether_addr*)eth_header->dest);
+    fprintf(fptr, "\t\tDest MAC: %s\n", mac_dest_str);
+    char* mac_src_str = ether_ntoa((struct ether_addr*)eth_header->src);
+    fprintf(fptr, "\t\tSource MAC: %s\n", mac_src_str);
+
     if(ntohs(eth_header->type) == 0x0800) {
         fprintf(fptr, "\t\tType: IP\n\n");
     } 
@@ -335,14 +343,11 @@ void parse_layer_2(const unsigned char* data, struct ethernet_header* eth_header
         case 0x0800: // IPv4
             parse_IPV4( data + sizeof(struct ethernet_header));
             break;
-        case 0x86DD: // IPv6
-            printf("IPv6 packet detected\n");
-            break;
         case 0x0806: // ARP
             parse_ARP(data + sizeof(struct ethernet_header));
             break;
         default:
-            printf("Unknown Ethernet type: 0x%04x\n", ntohs(eth_header->type));
+            fprintf(fptr, "Unknown Ethernet type: 0x%04x\n", ntohs(eth_header->type));
     }
     return; 
 }
